@@ -1,0 +1,193 @@
+*lvim-snippets.txt*                  The snippet engine of the lvim-tech set
+
+==============================================================================
+CONTENTS                                                       *lvim-snippets*
+
+  1. Introduction ........................... |lvim-snippets-intro|
+  2. Requirements ........................... |lvim-snippets-requirements|
+  3. Setup .................................. |lvim-snippets-setup|
+  4. Formats and discovery .................. |lvim-snippets-formats|
+  5. Completion (lvim-cmp) .................. |lvim-snippets-cmp|
+  6. The picker ............................. |lvim-snippets-picker|
+  7. API .................................... |lvim-snippets-api|
+  8. Configuration .......................... |lvim-snippets-config|
+  9. Health ................................. |lvim-snippets-health|
+
+==============================================================================
+1. INTRODUCTION                                          *lvim-snippets-intro*
+
+lvim-snippets is the snippet engine of the lvim-tech set: collections in
+three formats (VS Code JSON, SnipMate, LuaSnip) behind ONE neutral engine —
+discovery by file extension under configurable roots (recursive), lazy
+parsing per filetype, format priority you control. It registers a completion
+source into lvim-cmp through the public register_source API (no wiring), and
+ships the :LvimSnippets picker: the current buffer's snippets with a live
+body preview, insert-at-the-cursor on confirm.
+
+==============================================================================
+2. REQUIREMENTS                                   *lvim-snippets-requirements*
+
+  • Neovim >= 0.11 (|vim.snippet| expansion)
+  • lvim-utils (setup() merge)
+  • lvim-ui — optional, the :LvimSnippets picker
+  • lvim-cmp — optional, snippet completion (the source registers itself)
+  • LuaSnip — optional, only for `.lua` snippet files (VS Code / SnipMate
+    need nothing)
+
+==============================================================================
+3. SETUP                                                 *lvim-snippets-setup*
+
+                                                       *lvim-snippets.setup()*
+require("lvim-snippets").setup({opts})
+
+Merges {opts} into the LIVE config in place (every reader
+`require("lvim-snippets.config")` sees the effective values), drops the
+engine caches (discovery re-runs lazily against the new paths/formats),
+registers the "snippets" source into lvim-cmp (when installed and
+`cmp.enabled`), and installs the :LvimSnippets command. Call it after
+lvim-cmp is available so the registration lands; safe to call again at
+runtime to re-point the collection roots. >lua
+    require("lvim-snippets").setup({})
+<
+==============================================================================
+4. FORMATS AND DISCOVERY                               *lvim-snippets-formats*
+
+Three formats, discovered by file EXTENSION: VS Code (`<ft>.json`, or a
+`package.json` manifest's `contributes.snippets`), SnipMate (`<ft>.snippets`,
+parsed here — no dependency), and LuaSnip (`<ft>.lua`, only when LuaSnip is
+installed). `<ft>` is the filetype; the language "all" applies everywhere.
+
+Folders are fully config-driven — `paths` is the list of roots to scan
+(default `{ stdpath("config")/snippets }`; setting your own REPLACES it).
+Each root is walked RECURSIVELY, so snippets can be organised in nested
+subfolders by type/purpose (`languages/lua.json`,
+`frameworks/web/react.snippets`) — the directory names are yours, the
+FILENAME sets the filetype. A directory carrying a `package.json` manifest is
+a self-contained VS Code collection: the manifest owns its layout (it is not
+descended further).
+
+`formats` lists the enabled formats in PRIORITY order (omit one to disable
+it); the rank is the equal-fuzzy tiebreak in lvim-cmp. Files parse lazily,
+once per filetype per session — `reset()` (or a new `setup()`) picks up new
+files on disk.
+
+Expansion: VS Code / SnipMate records expand through |vim.snippet| (tabstops
+jump with |vim.snippet.jump()| — lvim-cmp binds <Tab>/<S-Tab>); LuaSnip
+records carry their own expander and go through LuaSnip (function/dynamic
+nodes work). Backtick / python interpolations in SnipMate bodies are NOT
+evaluated (vim.snippet cannot) — they pass through literally.
+
+==============================================================================
+5. COMPLETION (LVIM-CMP)                                   *lvim-snippets-cmp*
+
+With lvim-cmp installed, setup() registers a "snippets" source through
+lvim-cmp's public register_source API — lvim-cmp itself carries no snippet
+code. Each record maps to one completion item: prefix → label/filter text,
+body → snippet-format insert text, description + fenced body (or the LuaSnip
+docstring) → the documentation float, and the format-priority rank encodes
+into the item's sort_text so equal-fuzzy snippets tiebreak by format. A
+LuaSnip record's expander rides on the item — lvim-cmp's accept runs it
+instead of |vim.snippet|.
+
+The source's per-source options inside lvim-cmp (merge `priority`, the
+`min_keyword_length` floor) come from the `cmp` config block; `cmp.enabled =
+false` skips the registration entirely.
+
+==============================================================================
+6. THE PICKER                                           *lvim-snippets-picker*
+
+                                                               *:LvimSnippets*
+>vim
+    :LvimSnippets                 " float (the default)
+    :LvimSnippets area            " the minibuffer / cmdline zone
+    :LvimSnippets bottom          " a bottom dock
+<
+The current buffer's snippets (its filetype + "all") in the canonical lvim-ui
+panel: column-aligned prefix + description rows and a live BODY preview
+beside the list (treesitter-highlighted by the snippet's language; the
+LuaSnip docstring — the expanded form — when available). A layout token given
+anywhere on the command overrides `picker.layout` and sticks for the session.
+
+Keys inside the panel:
+
+  j / k (Down/Up)   move between the snippets (the preview follows)
+  <C-l> / <C-h>     move between the list and the preview panel
+  <Tab>             toggle the preview panel
+  <C-j> / <C-k>     move between sectors (content · footer)
+  <CR> / <Space>    insert the focused snippet at the cursor — the panel
+                    closes, the snippet expands, the first tabstop is entered
+  q / <Esc>         close
+
+==============================================================================
+7. API                                                     *lvim-snippets-api*
+
+require("lvim-snippets").setup({opts})    see |lvim-snippets.setup()|
+
+                                                         *lvim-snippets.get()*
+require("lvim-snippets").get({ft})
+        The ranked NEUTRAL snippet records for a filetype (default: the
+        current buffer's) — its own files + "all", in format-priority order.
+        Each record: >
+            { prefix, body, description?, name?, ft, kind, rank,
+              docstring?, expand? }
+<        `kind` is "vscode" | "snipmate" | "luasnip"; `rank` is the format's
+        priority index (1 = highest); `docstring`/`expand` are LuaSnip-only.
+
+                                                      *lvim-snippets.expand()*
+require("lvim-snippets").expand({record})
+        Expand a record at the cursor: native |vim.snippet.expand()| for
+        vscode/snipmate records, the record's own LuaSnip closure otherwise.
+
+                                                       *lvim-snippets.reset()*
+require("lvim-snippets").reset()
+        Drop the discovery + parse caches (paths/formats changed, new files
+        on disk) — discovery re-runs lazily.
+
+                                                       *lvim-snippets.stats()*
+require("lvim-snippets").stats()
+        Registry statistics: file/language counts per format, unparsable
+        files, LuaSnip availability (what :checkhealth shows).
+
+==============================================================================
+8. CONFIGURATION                                        *lvim-snippets-config*
+
+The full default config (every option at its default): >lua
+    require("lvim-snippets").setup({
+        paths = { vim.fn.stdpath("config") .. "/snippets" },
+        formats = { "vscode", "snipmate", "luasnip" },
+        cmp = {
+            enabled = true,
+            priority = 80,
+            min_keyword_length = 1,
+        },
+        picker = {
+            layout = "float",
+            preview = true,
+            preview_side = "right",
+        },
+    })
+<
+  paths          collection roots (recursive). Your list REPLACES the default
+                 (a clean array merge) — nothing is hardcoded.
+  formats        enabled formats in PRIORITY order; omit one to disable it.
+  cmp.enabled    register the "snippets" source into lvim-cmp on setup().
+  cmp.priority   the source's merge rank among lvim-cmp sources.
+  cmp.min_keyword_length
+                 per-source keyword floor inside lvim-cmp.
+  picker.layout  :LvimSnippets default layout: "float" | "area" | "bottom".
+  picker.preview show the body preview panel beside the list.
+  picker.preview_side
+                 initial preview placement: "right" | "left" | "above" |
+                 "below".
+
+==============================================================================
+9. HEALTH                                               *lvim-snippets-health*
+
+Run `:checkhealth lvim-snippets`. It reports the Neovim requirement, the
+shared dependencies (lvim-utils, lvim-ui), the discovered collections
+(per-format file counts and the active priority order), unparsable files,
+LuaSnip `.lua` files present without LuaSnip installed (they are skipped
+until it is), whether the "snippets" source registered into lvim-cmp, and
+validates the live config.
+
+vim:tw=78:ts=8:ft=help:norl:
