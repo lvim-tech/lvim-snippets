@@ -42,9 +42,6 @@ local records_by_ft = {}
 ---@type string[]  files that failed to parse (reported by :checkhealth)
 local broken_files = {}
 
----@type boolean  LuaSnip `.lua` files were found but LuaSnip is not installed (health note)
-local luasnip_seen = false
-
 ---@type integer  bumped on every reset() so consumers can invalidate their derived caches
 local generation = 1
 
@@ -143,8 +140,13 @@ local function discover()
     end
     local map = {}
     local roots = {}
+    local seen = {}
     for _, p in ipairs(config.paths or {}) do
-        roots[#roots + 1] = vim.fs.normalize(p)
+        local root = vim.fs.normalize(p)
+        if not seen[root] then -- a duplicate root would register every collection under it twice
+            seen[root] = true
+            roots[#roots + 1] = root
+        end
     end
     for _, root in ipairs(roots) do
         if uv.fs_stat(root) then
@@ -248,16 +250,17 @@ end
 ---@param ft string
 ---@param out LvimSnippetsRecord[]
 ---@param rank integer   the format's priority index (1 = highest)
+---@return boolean complete  false ⇒ LuaSnip was not loadable, so this file contributed nothing and the
+---                          caller must NOT freeze the ft cache (LuaSnip may lazy-load later)
 local function load_luasnip(path, ft, out, rank)
     local ok_ls = pcall(require, "luasnip")
     if not ok_ls then
-        luasnip_seen = true -- files exist but no engine → :checkhealth note
-        return
+        return false
     end
     local ok, snips = pcall(dofile, path)
     if not ok or type(snips) ~= "table" then
         broken_files[#broken_files + 1] = path
-        return
+        return true -- a broken file is a COMPLETE outcome (tracked in broken_files); caching is fine
     end
     for _, snip in ipairs(snips) do
         local trig = type(snip) == "table" and snip.trigger or nil
@@ -288,6 +291,7 @@ local function load_luasnip(path, ft, out, rank)
             }
         end
     end
+    return true
 end
 
 --- The (lazily built, session-cached) ranked records for a filetype: its own files + "all".
@@ -307,6 +311,7 @@ function M.get(ft)
     end
     local map = discover()
     local out = {}
+    local complete = true -- cleared when a LuaSnip file could not load because LuaSnip is absent
     local formats = config.formats or { "vscode", "snipmate", "luasnip" }
     ---@param entry LvimSnippetsFile
     ---@param rank integer
@@ -319,7 +324,9 @@ function M.get(ft)
         elseif entry.kind == "snipmate" then
             build_records(parse_snipmate(entry.path), ft, "snipmate", out, rank)
         elseif entry.kind == "luasnip" then
-            load_luasnip(entry.path, ft, out, rank)
+            if not load_luasnip(entry.path, ft, out, rank) then
+                complete = false
+            end
         end
     end
     local lists = { map[ft] or {} }
@@ -335,7 +342,12 @@ function M.get(ft)
             end
         end
     end
-    records_by_ft[ft] = out
+    -- Only freeze the cache for a COMPLETE build. If a LuaSnip `.lua` file for this ft was skipped
+    -- because LuaSnip was not loadable yet, rebuild on the next get() — so lazy-loading LuaSnip after
+    -- the first request surfaces its snippets without a manual reset().
+    if complete then
+        records_by_ft[ft] = out
+    end
     return out
 end
 
@@ -355,7 +367,7 @@ function M.expand(record)
 end
 
 --- Registry statistics for :checkhealth.
----@return { languages: integer, files: integer, broken: string[], by_kind: table<string, integer>, luasnip_available: boolean, luasnip_orphan: boolean }
+---@return { languages: integer, files: integer, broken: string[], by_kind: table<string, integer>, luasnip_available: boolean }
 function M.stats()
     local map = discover()
     local languages, files = 0, 0
@@ -373,8 +385,6 @@ function M.stats()
         broken = broken_files,
         by_kind = by_kind,
         luasnip_available = pcall(require, "luasnip"),
-        -- LuaSnip `.lua` files exist but no engine loaded them (only set once a ft has been built)
-        luasnip_orphan = luasnip_seen,
     }
 end
 
@@ -384,7 +394,6 @@ function M.reset()
     files_by_lang = nil
     records_by_ft = {}
     broken_files = {}
-    luasnip_seen = false
     generation = generation + 1
 end
 

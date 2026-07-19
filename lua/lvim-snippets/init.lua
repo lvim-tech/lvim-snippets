@@ -68,7 +68,7 @@ end
 
 --- Registry statistics: file/language counts per format, unparsable files, LuaSnip
 --- availability (:checkhealth consumes this).
----@return { languages: integer, files: integer, broken: string[], by_kind: table<string, integer>, luasnip_available: boolean, luasnip_orphan: boolean }
+---@return { languages: integer, files: integer, broken: string[], by_kind: table<string, integer>, luasnip_available: boolean }
 function M.stats()
     return engine.stats()
 end
