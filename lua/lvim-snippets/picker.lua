@@ -2,7 +2,7 @@
 -- the canonical lvim-ui items-list panel (one tab named after the filetype), with a live
 -- BODY preview beside the list (lvim-ui.preview scratch render: treesitter by language,
 -- never a filetype — no LSP attach) and insert-at-cursor on confirm through the engine's
--- `expand` (native vim.snippet, or LuaSnip for its records — tabstops jump as usual).
+-- `expand` (the plugin's own session engine — tabstops jump as usual).
 -- Labels are column-aligned: prefix padded to the widest prefix, description after it.
 -- Layout resolves per-command token → `config.picker.layout` → "float"; a per-command
 -- token is sticky for the session (the panels canon).
@@ -130,7 +130,7 @@ function M.open(args)
             end
             local rec = result.item._record
             -- Expand back in the opener window, after the panel has fully closed and focus
-            -- is restored — vim.snippet.expand inserts at the cursor and enters the first
+            -- is restored — expand inserts at the cursor and enters the first
             -- tabstop (insert/select mode); LuaSnip records go through their own closure.
             vim.schedule(function()
                 if api.nvim_win_is_valid(opener) and api.nvim_get_current_win() ~= opener then

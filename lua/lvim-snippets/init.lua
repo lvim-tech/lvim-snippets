@@ -114,9 +114,9 @@ function M.reset()
     engine.reset()
 end
 
---- Registry statistics: file/language counts per format, unparsable files, LuaSnip
---- availability (:checkhealth consumes this).
----@return { languages: integer, files: integer, broken: string[], by_kind: table<string, integer>, luasnip_available: boolean }
+--- Registry statistics: file/language counts per format, unparsable files, and `.lua`
+--- collections the shim could translate only in part (:checkhealth consumes this).
+---@return { languages: integer, files: integer, broken: string[], partial: string[], by_kind: table<string, integer> }
 function M.stats()
     return engine.stats()
 end

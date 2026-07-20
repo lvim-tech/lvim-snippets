@@ -27,7 +27,7 @@ body preview, insert-at-the-cursor on confirm.
 ==============================================================================
 2. REQUIREMENTS                                   *lvim-snippets-requirements*
 
-  • Neovim >= 0.11 (|vim.snippet| expansion)
+  • Neovim >= 0.11
   • lvim-utils (setup() merge)
   • lvim-ui — optional, the :LvimSnippets picker
   • lvim-cmp — optional, snippet completion (the source registers itself)
@@ -71,11 +71,21 @@ it); the rank is the equal-fuzzy tiebreak in lvim-cmp. Files parse lazily,
 once per filetype per session — `reset()` (or a new `setup()`) picks up new
 files on disk.
 
-Expansion: VS Code / SnipMate records expand through |vim.snippet| (tabstops
-jump with the plugin's own session — lvim-cmp binds <Tab>/<S-Tab>); every
-record expands through that session (tabstops, mirrors, choices, transforms
-nodes work). Backtick / python interpolations in SnipMate bodies are NOT
-evaluated (vim.snippet cannot) — they pass through literally.
+Expansion goes through the plugin's OWN session engine, not |vim.snippet| —
+that is what makes nested placeholders, variables, choices and transforms
+work, none of which |vim.snippet| implements. Tabstops jump with <Tab> /
+<S-Tab> (lvim-cmp's keys); a placeholder arrives SELECTED, so typing replaces
+it. The session ends at the exit stop, or when the cursor leaves the snippet.
+
+Transforms (`${1/regex/replacement/flags}`) are matched with Vim's own regex
+engine, so alternation, the quantifiers, non-greedy `+?` and up to nine
+capture groups all work, as do the replacement forms `${1:/upcase}`,
+`${1:+text}`, `${1:-text}` and `${1:?a:b}`. A regex Vim cannot express —
+lookaround, `\b`, more than nine groups — is SKIPPED rather than half-applied,
+leaving the source text untouched.
+
+Backtick / python interpolations in SnipMate bodies are NOT evaluated; they
+pass through literally.
 
 ==============================================================================
 5. COMPLETION (LVIM-CMP)                                   *lvim-snippets-cmp*
@@ -87,7 +97,7 @@ body → snippet-format insert text, description + fenced body (or the
 docstring) → the documentation float, and the format-priority rank encodes
 into the item's sort_text so equal-fuzzy snippets tiebreak by format. A
 record's body rides on the item — lvim-cmp's accept expands it
-instead of |vim.snippet|.
+through the plugin's own session engine.
 
 The source's per-source options inside lvim-cmp (merge `priority`, the
 `min_keyword_length` floor) come from the `cmp` config block; `cmp.enabled =
@@ -135,8 +145,8 @@ require("lvim-snippets").get({ft})
 
                                                       *lvim-snippets.expand()*
 require("lvim-snippets").expand({record})
-        Expand a record at the cursor: native |vim.snippet.expand()| for
-        every record, through the plugin's own session engine.
+        Expand a record at the cursor, through the plugin's own session
+        engine — every record, every format.
 
                                                        *lvim-snippets.reset()*
 require("lvim-snippets").reset()

@@ -1,9 +1,9 @@
 -- lvim-snippets: :checkhealth lvim-snippets.
 -- Diagnoses what makes a snippet registry misbehave invisibly: the required runtime
--- (vim.snippet), the shared dependencies (lvim-utils merge, lvim-ui for the picker), an
+-- the shared dependencies (lvim-utils merge, lvim-ui for the picker), an
 -- internally inconsistent config (paths / formats / cmp numbers), the collections actually
--- discovered (per-format counts, the active priority order, unparsable files), LuaSnip
--- `.lua` files present without LuaSnip installed (orphans — silently skipped), and whether
+-- discovered (per-format counts, the active priority order, unparsable files), `.lua`
+-- collections the built-in shim could translate only in part, and whether
 -- the "snippets" source really registered into lvim-cmp. Read-only.
 --
 ---@module "lvim-snippets.health"
@@ -86,7 +86,7 @@ function M.check()
     if vim.fn.has("nvim-0.11") == 1 then
         health.ok("Neovim >= 0.11")
     else
-        health.error("Neovim >= 0.11 is required (vim.snippet expansion)")
+        health.error("Neovim >= 0.11 is required")
     end
 
     -- shared dependencies
@@ -124,10 +124,15 @@ function M.check()
             )
         )
     end
-    if stats.luasnip_available then
-        health.ok("LuaSnip installed — `.lua` snippet files load and expand through it")
-    elseif stats.by_kind.luasnip > 0 then
-        health.warn("LuaSnip `.lua` files found but LuaSnip is not installed — they are skipped")
+    if stats.by_kind.luasnip > 0 then
+        health.ok(
+            ("%d `.lua` collection(s) read by the built-in shim — LuaSnip is not required"):format(
+                stats.by_kind.luasnip
+            )
+        )
+    end
+    for _, path in ipairs(stats.partial or {}) do
+        health.warn(("`.lua` file translated only in part (a node has no static form): %s"):format(path))
     end
     for _, path in ipairs(stats.broken) do
         health.warn(("unparsable file skipped: %s"):format(path))

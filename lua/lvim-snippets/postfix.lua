@@ -44,8 +44,16 @@ local function applies(rule, ft)
     if not rule.ft then
         return true
     end
+    -- Bound to a local first: narrowing a FIELD by `type()` is not something the type checker
+    -- follows, so `rule.ft` would stay `string|string[]` in both branches.
+    local spec = rule.ft
     ---@type string[]
-    local list = type(rule.ft) == "table" and rule.ft or { rule.ft }
+    local list = {}
+    if type(spec) == "table" then
+        list = spec
+    elseif type(spec) == "string" then
+        list = { spec }
+    end
     for _, f in ipairs(list) do
         if f == ft or f == "all" then
             return true

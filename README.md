@@ -15,8 +15,8 @@ insert-at-the-cursor on confirm.
 
   | Format | Files | Expansion |
   | --- | --- | --- |
-  | **VS Code** | a `package.json` manifest (`contributes.snippets`), or loose `<ft>.json` | native `vim.snippet` |
-  | **SnipMate** | loose `<ft>.snippets` (parsed here — no dependency) | native `vim.snippet` |
+  | **VS Code** | a `package.json` manifest (`contributes.snippets`), or loose `<ft>.json` | the plugin's own session engine |
+  | **SnipMate** | loose `<ft>.snippets` (parsed here — no dependency) | the plugin's own session engine |
   | **LuaSnip syntax** | loose `<ft>.lua` | the plugin's own shim — no LuaSnip installation |
 
   `<ft>` is the filetype (`lua.json`, `python.snippets`, …); the language `all` applies everywhere. So
@@ -42,7 +42,7 @@ insert-at-the-cursor on confirm.
 
 ## Requirements
 
-Requires **Neovim >= 0.11** (`vim.snippet`) and [lvim-utils](https://github.com/lvim-tech/lvim-utils).
+Requires **Neovim >= 0.11** and [lvim-utils](https://github.com/lvim-tech/lvim-utils).
 [lvim-ui](https://github.com/lvim-tech/lvim-ui) is optional (the `:LvimSnippets` picker),
 [lvim-cmp](https://github.com/lvim-tech/lvim-cmp) is optional (completion)
 (only for `.lua` snippet files — VS Code / SnipMate need nothing).
@@ -76,7 +76,7 @@ the engine and the picker themselves).
 ### Completion (through lvim-cmp)
 
 Nothing to do — with lvim-cmp installed, `setup()` registers the `snippets` source and your snippets
-complete as you type, ranked with everything else. Accepting expands the snippet (`vim.snippet`, or
+complete as you type, ranked with everything else. Accepting expands the snippet (the plugin's own session engine, or
 `<Tab>` / `<S-Tab>` jump the tabstops (lvim-cmp's keys).
 
 ### The picker

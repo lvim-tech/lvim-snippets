@@ -34,12 +34,15 @@ local NS = api.nvim_create_namespace("LvimSnippetsSession")
 ---@field marks integer[][]             one { start_id, end_id } extmark pair per occurrence
 ---@field choice? string[]              choice options, when this stop is a choice
 ---@field transforms table[]            transform nodes bound to this index
+---@field initial? string               the text this stop rendered as (to tell a rewrite from an edit)
+---@field nested_in? table<integer, boolean>  indices of the stops this one sits INSIDE
 
 ---@class LvimSnippetsSession
 ---@field buf integer
 ---@field stops LvimSnippetsStop[]      in jump order (ascending, 0 last)
 ---@field current integer               index into `stops`
 ---@field augroup integer
+---@field entered? boolean          has the cursor been inside the snippet yet (see the CursorMoved teardown)
 
 ---@type table<integer, LvimSnippetsSession>  buffer -> its session
 local sessions = {}
@@ -65,6 +68,11 @@ local function render(nodes, ctx)
         end
     end
 
+    -- The stack of placeholder indices we are currently INSIDE. Nesting cannot be recovered from the
+    -- rendered spans afterwards: `${1:${2:inner}}` gives both stops the exact same range, so a
+    -- containment test sees no parent at all. The tree knows, so it is recorded while walking it.
+    local stack = {}
+
     local function walk(list)
         for _, n in ipairs(list) do
             if n.type == "text" then
@@ -82,17 +90,37 @@ local function render(nodes, ctx)
                     end
                 end
             elseif n.type == "transform" then
-                -- Rendered empty; the value arrives when its source stop is edited.
-                ranges[#ranges + 1] = { index = n.index, from = len, to = len, transform = n }
+                if n.name then
+                    -- A transform on a VARIABLE (`${TM_FILENAME/(.*)/${1:/upcase}/}`) has no tabstop
+                    -- behind it — its input is fixed the moment the snippet expands, so it is applied
+                    -- here and emitted as plain text. Treating it like a tabstop transform was a
+                    -- crash: the range carried `index = nil`, which is not a usable table key.
+                    emit(variables.transform(variables.resolve(n.name, ctx) or "", n))
+                elseif n.index then
+                    -- Rendered empty; the value arrives when its source stop is edited.
+                    ranges[#ranges + 1] = { index = n.index, from = len, to = len, transform = n }
+                end
             elseif n.type == "tabstop" or n.type == "placeholder" or n.type == "choice" then
                 local from = len
+                -- Where this node's own output starts in `out`, so the mirror seed below can be
+                -- concatenated from here rather than from the whole buffer of emitted pieces.
+                local mark = #out
+                local enclosing = nil
+                if #stack > 0 then
+                    enclosing = {}
+                    for _, idx in ipairs(stack) do
+                        enclosing[idx] = true
+                    end
+                end
                 if n.type == "placeholder" and n.children then
+                    stack[#stack + 1] = n.index
                     walk(n.children)
+                    stack[#stack] = nil
                     -- Remember what this index renders as, so a bare `$1` MIRROR of it starts out
                     -- showing the same text. Without this the mirror renders empty and only catches
                     -- up on the first keystroke — `local ${1:name} = require("$1")` expanded to
                     -- `require("")`, which reads as a bug even though typing would fix it.
-                    seed[n.index] = table.concat(out):sub(from + 1)
+                    seed[n.index] = table.concat(out, "", mark + 1)
                 elseif n.type == "choice" and n.items and n.items[1] then
                     emit(n.items[1])
                     seed[n.index] = n.items[1]
@@ -104,6 +132,7 @@ local function render(nodes, ctx)
                     from = from,
                     to = len,
                     choice = n.type == "choice" and n.items or nil,
+                    nested_in = enclosing,
                 }
             end
         end
@@ -253,24 +282,117 @@ local function goto_stop(sess, n)
     if sr == nil then
         return
     end
-    local win = api.nvim_get_current_win()
-    if sr == er and sc == ec then
-        -- Empty stop: just put the cursor there, in insert mode.
-        api.nvim_win_set_cursor(win, { sr + 1, sc })
-        if api.nvim_get_mode().mode ~= "i" then
-            vim.cmd("startinsert")
-        end
-    else
-        -- Non-empty: select it so the next keystroke replaces it.
-        api.nvim_win_set_cursor(win, { sr + 1, sc })
-        vim.cmd("normal! v")
-        api.nvim_win_set_cursor(win, { er + 1, math.max(ec - 1, 0) })
-        vim.cmd("normal! o\\<C-g>")
-        vim.api.nvim_feedkeys(api.nvim_replace_termcodes("<C-g>", true, false, true), "n", false)
+    -- Everything below is fed as ONE key sequence rather than driven with `nvim_win_set_cursor` and
+    -- `:normal!`. Both of those are undone here: a Lua callback that runs while the editor is in
+    -- insert mode has its mode changes REVERTED when it returns (the editor's real state wins), and
+    -- `:stopinsert` is documented as leaving insert "as soon as possible" — i.e. after this function,
+    -- straight into the selection it just built. Measuring inside the function showed correct columns
+    -- every time; the damage happened after it returned, which is why the placeholder came back a
+    -- character wide or a character short. Queued keys are executed by the main loop in order, so the
+    -- mode they end in is the mode that sticks.
+    --
+    -- Motions count CHARACTERS, so the byte columns the extmarks carry are converted first — `l`
+    -- moves by character, and for anything multi-byte the two disagree.
+    local lines = api.nvim_buf_get_lines(sess.buf, sr, er + 1, false)
+    local function chars_before(text, byte_col)
+        return vim.fn.strchars(string.sub(text or "", 1, byte_col))
     end
+    local start_col = chars_before(lines[1], sc)
+
+    local keys = { "\28\14" } -- <C-\><C-n>: leave whatever mode we are in
+
+    --- Move to (`line1`, `col_chars`), and report whether that column was actually REACHABLE.
+    ---
+    --- Positioning by motion has to respect what normal mode can reach: the column one past the last
+    --- character does not exist there. `l` does not simply stop at the end — with `l` in 'whichwrap'
+    --- (which this config and many others set) it wraps to the NEXT LINE, which silently moved every
+    --- stop sitting at end-of-line, `$0` above all. `$` names the last character exactly and is
+    --- immune to both 'whichwrap' and 'virtualedit'.
+    ---@param line1 integer     1-based line
+    ---@param col_chars integer target column, in CHARACTERS
+    ---@param text string?      that line's text, to know how far it reaches
+    ---@return boolean exact    false when the cursor stopped ON the last character instead
+    local function go(line1, col_chars, text)
+        keys[#keys + 1] = tostring(line1) .. "G"
+        if col_chars <= 0 then
+            keys[#keys + 1] = "0"
+            return true
+        end
+        if col_chars >= vim.fn.strchars(text or "") then
+            keys[#keys + 1] = "$"
+            return false
+        end
+        keys[#keys + 1] = "0" .. tostring(col_chars) .. "l"
+        return true
+    end
+
+    local exact = go(sr + 1, start_col, lines[1])
+
+    if sr == er and sc == ec then
+        -- Empty stop: nothing to select, just land there and insert. `i` inserts BEFORE the cursor
+        -- and `a` AFTER it — and "after the last character" is precisely the position `go` could not
+        -- reach, so the unreachable case is not an approximation, it is the same point named the
+        -- other way round.
+        keys[#keys + 1] = exact and "i" or "a"
+    else
+        keys[#keys + 1] = "v"
+        -- Where the cursor has to sit for the selection to cover the range depends on 'selection':
+        -- the default (inclusive) takes the character under the cursor, so the cursor goes on the
+        -- LAST character; with `exclusive` it does not, so the cursor goes one PAST it. Getting this
+        -- wrong drops or keeps one character of every placeholder.
+        local end_line = lines[er - sr + 1]
+        local end_col = chars_before(end_line, ec)
+        if vim.o.selection ~= "exclusive" then
+            end_col = math.max(end_col - 1, 0)
+        end
+        go(er + 1, end_col, end_line)
+        keys[#keys + 1] = "\7" -- Ctrl-G: visual -> select, so typing REPLACES the placeholder
+    end
+
+    api.nvim_feedkeys(table.concat(keys), "n", false)
+end
+
+--- Has `stop` been swallowed by a rewrite of a stop it sits inside?
+---
+--- `${1:${2:inner}}` puts two stops over the same text. Replacing the outer one removes the inner
+--- one's content wholesale, so the inner stop no longer refers to anything the user wrote — every
+--- editor drops it from the jump order at that point rather than selecting the remains of its range.
+---@param sess LvimSnippetsSession
+---@param stop LvimSnippetsStop
+---@return boolean
+local function dropped(sess, stop)
+    if not stop.nested_in then
+        return false
+    end
+    for _, other in ipairs(sess.stops) do
+        if stop.nested_in[other.index] and mark_text(sess.buf, other.marks[1]) ~= other.initial then
+            return true
+        end
+    end
+    return false
+end
+
+--- The index of the stop `direction` away from the active one, skipping dropped stops, or nil when
+--- there is none left that way.
+---@param sess LvimSnippetsSession
+---@param direction integer
+---@return integer?
+local function next_stop(sess, direction)
+    local n = sess.current + direction
+    while sess.stops[n] and dropped(sess, sess.stops[n]) do
+        n = n + direction
+    end
+    if n < 1 or n > #sess.stops then
+        return nil
+    end
+    return n
 end
 
 --- Is a session active for the current buffer, and can it move `direction`?
+---
+--- Asked by the `<Tab>` keymap to decide whether to jump or fall through. It must apply the same
+--- skipping `jump` does: reporting a jump that then turns out to be to a dropped stop would swallow
+--- the key and do nothing.
 ---@param opts? { direction?: integer }
 ---@return boolean
 function M.active_jumpable(opts)
@@ -278,9 +400,7 @@ function M.active_jumpable(opts)
     if not sess then
         return false
     end
-    local dir = (opts and opts.direction) or 1
-    local n = sess.current + dir
-    return n >= 1 and n <= #sess.stops
+    return next_stop(sess, (opts and opts.direction) or 1) ~= nil
 end
 
 --- Jump to the next (1) or previous (-1) stop. Ends the session when it moves past the exit stop.
@@ -293,8 +413,8 @@ function M.jump(direction)
     end
     sync(sess)
     apply_transforms(sess)
-    local n = sess.current + (direction or 1)
-    if n < 1 or n > #sess.stops then
+    local n = next_stop(sess, direction or 1)
+    if not n then
         return false
     end
     goto_stop(sess, n)
@@ -399,6 +519,26 @@ function M.expand(body, opts)
         end
     end
 
+    -- Record what each stop rendered as, so a later rewrite can be told from the original text, and
+    -- carry over the nesting the renderer observed. `${1:${2:inner}}` puts two stops over the same
+    -- text: rewriting the outer one replaces the inner one's content wholesale, so the inner stop no
+    -- longer refers to anything the user wrote and every editor drops it from the jump order there.
+    for _, stop in ipairs(stops) do
+        stop.initial = mark_text(buf, stop.marks[1])
+    end
+    for _, rg in ipairs(ranges) do
+        if rg.nested_in then
+            for _, stop in ipairs(stops) do
+                if stop.index == rg.index then
+                    stop.nested_in = stop.nested_in or {}
+                    for parent in pairs(rg.nested_in) do
+                        stop.nested_in[parent] = true
+                    end
+                end
+            end
+        end
+    end
+
     -- Nothing to track: place the cursor at the exit stop and stay out of the way.
     if #stops <= 1 then
         local only = stops[1]
@@ -416,6 +556,7 @@ function M.expand(body, opts)
         buf = buf,
         stops = stops,
         current = 0,
+        entered = false,
         augroup = api.nvim_create_augroup("LvimSnippetsSession" .. buf, { clear = true }),
     }
     sessions[buf] = sess
@@ -424,18 +565,64 @@ function M.expand(body, opts)
         group = sess.augroup,
         buffer = buf,
         callback = function()
-            if sessions[buf] then
-                sync(sess)
-                apply_transforms(sess)
-            end
+            -- SCHEDULED, not inline. Replacing a selected placeholder is one operation to the user
+            -- but two to the editor — delete the selection, then begin the insert — and this fires
+            -- BETWEEN them. Doing anything at that moment disturbs the pending half: the placeholder
+            -- came back with its last character still in the buffer, worse for multi-byte text where
+            -- a whole letter survived. Deferring lets the change complete, then mirrors and
+            -- transforms catch up on a settled buffer.
+            vim.schedule(function()
+                if sessions[buf] then
+                    sync(sess)
+                    apply_transforms(sess)
+                end
+            end)
         end,
     })
-    -- A session belongs to its buffer: unloading it, or leaving insert mode at the exit stop, ends it.
+    -- A session belongs to its buffer, and unloading it ends it.
     api.nvim_create_autocmd({ "BufUnload", "BufWipeout" }, {
         group = sess.augroup,
         buffer = buf,
         callback = function()
             teardown(buf)
+        end,
+    })
+    -- ...and it ends when the cursor leaves the text the snippet occupies. Without this the session
+    -- outlives the snippet: `<Tab>` stays bound to "jump" for the rest of the buffer's life, and a
+    -- mirror can still rewrite text the user has long since moved away from. The bound is recomputed
+    -- from the live extmarks each time, so it follows the snippet as it grows.
+    api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI" }, {
+        group = sess.augroup,
+        buffer = buf,
+        callback = function()
+            if not sessions[buf] then
+                return
+            end
+            local top, bot
+            for _, stop in ipairs(sess.stops) do
+                for _, pair in ipairs(stop.marks) do
+                    local sr, _, er = mark_range(buf, pair)
+                    if sr then
+                        top = (top == nil or sr < top) and sr or top
+                        bot = (bot == nil or er > bot) and er or bot
+                    end
+                end
+            end
+            if top == nil then
+                return
+            end
+            -- Line granularity on purpose: an exit stop at the end of a line is legitimately one
+            -- column past the last mark, and a column test would tear the session down there.
+            local row = api.nvim_win_get_cursor(0)[1] - 1
+            if row >= top and row <= bot then
+                -- Leaving presupposes having arrived. Inserting a multi-line body leaves the cursor
+                -- at the END of the inserted text — outside the region — and this autocmd fires there
+                -- BEFORE the keys that jump to the first stop have been processed, which tore every
+                -- multi-line snippet down the instant it expanded.
+                sess.entered = true
+            elseif sess.entered then
+                teardown(buf)
+            end
         end,
     })
 

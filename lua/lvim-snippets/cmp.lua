@@ -6,7 +6,7 @@
 -- items take), the format-priority rank → the sort_text prefix ("<rank>:<prefix>") so
 -- snippets with an EQUAL fuzzy score tiebreak by format, and a LuaSnip record's `expand`
 -- closure rides on the item (lvim-cmp's accept honours a custom `expand` instead of
--- vim.snippet). Documentation (description + fenced body / LuaSnip docstring) feeds the
+-- the session engine). Documentation (description + fenced body / LuaSnip docstring) feeds the
 -- docs float. Items are cached per filetype and rebuilt when the engine caches reset
 -- (generation stamp).
 --

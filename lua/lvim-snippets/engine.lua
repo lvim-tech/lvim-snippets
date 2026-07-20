@@ -11,7 +11,7 @@
 -- into each record's `rank` so consumers can tiebreak equal matches by format. Files parse
 -- LAZILY, once per filetype per session. The engine emits NEUTRAL records (no completion-item
 -- shape): the lvim-cmp adapter (lvim-snippets.cmp) and the :LvimSnippets picker both consume
--- `M.get(ft)`; expansion goes through `M.expand` — native vim.snippet for vscode/snipmate
+-- `M.get(ft)`; expansion goes through `M.expand` — the plugin's own session engine for every
 -- records, the record's own `expand` closure (LuaSnip) otherwise.
 --
 ---@module "lvim-snippets.engine"
@@ -31,7 +31,7 @@ local M = {}
 ---@field kind "vscode"|"snipmate"|"luasnip"
 ---@field rank integer                    the format's priority index (1 = highest; `config.formats` order)
 ---@field docstring string?               LuaSnip docstring — the expanded form, for previews/documentation
----@field expand fun()?                   custom expander (LuaSnip records) — replaces vim.snippet.expand
+---@field expand fun()?                   custom expander (LuaSnip records) — replaces the default
 
 ---@type table<string, LvimSnippetsFile[]>?  language → snippet-file entries (nil until discovery ran)
 local files_by_lang = nil
@@ -41,6 +41,9 @@ local records_by_ft = {}
 
 ---@type string[]  files that failed to parse (reported by :checkhealth)
 local broken_files = {}
+
+---@type string[]  `.lua` files the shim loaded but could not translate in full
+local partial_files = {}
 
 ---@type integer  bumped on every reset() so consumers can invalidate their derived caches
 local generation = 1
@@ -214,7 +217,7 @@ end
 --- stripped; `# …` are comments and `extends …` directives end the current snippet (cross-
 --- file inheritance is not expanded here). Bodies use LSP-compatible `${1:…}` / `$0` tabstops
 --- (expanded natively); backtick `` `…` `` / python `` `!p …` `` interpolations are NOT
---- evaluated (vim.snippet cannot) — they pass through literally.
+--- evaluated — they pass through literally.
 ---@param path string
 ---@return table  name → { prefix, body, description }
 local function parse_snipmate(path)
@@ -264,15 +267,20 @@ end
 ---@param ft string
 ---@param out table[]
 ---@param rank integer
----@return boolean complete
 local function load_luasnip(path, ft, out, rank)
     local shim = require("lvim-snippets.luasnip_shim")
     local snips, postfix, err = shim.load(path)
     if err or not snips then
         broken_files[#broken_files + 1] = path
-        return true -- a broken file is a COMPLETE outcome (tracked in broken_files); caching is fine
+        return
     end
     for _, sp in ipairs(snips) do
+        -- The shim flags a snippet whose nodes it could not fully translate (a dynamic node has no
+        -- static form). It still expands and jumps — it just may be missing a computed piece — so it
+        -- is listed, and the file is surfaced in :checkhealth rather than failing silently.
+        if sp.complete == false and not vim.tbl_contains(partial_files, path) then
+            partial_files[#partial_files + 1] = path
+        end
         out[#out + 1] = {
             prefix = sp.prefix,
             body = sp.body,
@@ -303,7 +311,6 @@ local function load_luasnip(path, ft, out, rank)
             end
         end
     end
-    return true
 end
 
 --- The (lazily built, session-cached) ranked records for a filetype: its own files + "all".
@@ -323,7 +330,6 @@ function M.get(ft)
     end
     local map = discover()
     local out = {}
-    local complete = true -- cleared when a LuaSnip file could not load because LuaSnip is absent
     local formats = config.formats or { "vscode", "snipmate", "luasnip" }
     ---@param entry LvimSnippetsFile
     ---@param rank integer
@@ -336,9 +342,7 @@ function M.get(ft)
         elseif entry.kind == "snipmate" then
             build_records(parse_snipmate(entry.path), ft, "snipmate", out, rank)
         elseif entry.kind == "luasnip" then
-            if not load_luasnip(entry.path, ft, out, rank) then
-                complete = false
-            end
+            load_luasnip(entry.path, ft, out, rank)
         end
     end
     local lists = { map[ft] or {} }
@@ -378,12 +382,7 @@ function M.get(ft)
             end
         end
     end
-    -- Only freeze the cache for a COMPLETE build. If a LuaSnip `.lua` file for this ft was skipped
-    -- because LuaSnip was not loadable yet, rebuild on the next get() — so lazy-loading LuaSnip after
-    -- the first request surfaces its snippets without a manual reset().
-    if complete then
-        records_by_ft[ft] = out
-    end
+    records_by_ft[ft] = out
     return out
 end
 
@@ -407,7 +406,7 @@ function M.expand(record)
 end
 
 --- Registry statistics for :checkhealth.
----@return { languages: integer, files: integer, broken: string[], by_kind: table<string, integer>, luasnip_available: boolean }
+---@return { languages: integer, files: integer, broken: string[], partial: string[], by_kind: table<string, integer> }
 function M.stats()
     local map = discover()
     local languages, files = 0, 0
@@ -423,8 +422,8 @@ function M.stats()
         languages = languages,
         files = files,
         broken = broken_files,
+        partial = partial_files,
         by_kind = by_kind,
-        luasnip_available = pcall(require, "luasnip"),
     }
 end
 
@@ -434,6 +433,7 @@ function M.reset()
     files_by_lang = nil
     records_by_ft = {}
     broken_files = {}
+    partial_files = {}
     generation = generation + 1
 end
 
