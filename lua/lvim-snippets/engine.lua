@@ -77,7 +77,23 @@ local function register(map, lang, path, kind)
     for _, l in ipairs(langs) do
         if type(l) == "string" and l ~= "" then
             map[l] = map[l] or {}
-            map[l][#map[l] + 1] = { path = path, kind = kind }
+            -- The same FILE must never be registered twice for one language. Configured roots can
+            -- NEST — a vendored pack inside the main folder is the obvious layout — and the walker
+            -- descends each root fully, so every file under an inner root was found once through it
+            -- and once through the outer one. That doubled the discovered count (576 for 296 files
+            -- here) and, worse, listed every one of those snippets twice in the completion menu. The
+            -- dedupe lives at the file level rather than the root level because the outer/inner pair
+            -- are both legitimate roots — neither should be dropped, only the second sighting.
+            local dup = false
+            for _, existing in ipairs(map[l]) do
+                if existing.path == path then
+                    dup = true
+                    break
+                end
+            end
+            if not dup then
+                map[l][#map[l] + 1] = { path = path, kind = kind }
+            end
         end
     end
 end
@@ -291,9 +307,9 @@ local function load_luasnip(path, ft, out, rank)
 end
 
 --- The (lazily built, session-cached) ranked records for a filetype: its own files + "all".
---- Enabled formats run in the configured PRIORITY order (list index = rank; an omitted
---- format is off) — formats OUTER and files inner, so higher-priority formats emit first
---- and every record carries its rank for consumer-side tiebreaks.
+--- Two priorities apply, outer to inner: the ROOT order in `config.paths` (your own folder first, a
+--- vendored collection after it), then the FORMAT order in `config.formats`. Every record carries the
+--- format's rank for consumer-side tiebreaks; the root decides emission order.
 ---@param ft? string  the filetype (default: the current buffer's); "" maps to "all"
 ---@return LvimSnippetsRecord[]
 function M.get(ft)
@@ -329,11 +345,35 @@ function M.get(ft)
     if ft ~= "all" then
         lists[#lists + 1] = map.all or {}
     end
-    for rank, fmt in ipairs(formats) do
-        for _, list in ipairs(lists) do
-            for _, entry in ipairs(list) do
-                if entry.kind == fmt then
-                    dispatch(entry, rank)
+    -- ROOT order is the outer priority, FORMAT order the inner one. `config.paths` is already a
+    -- ranked list — the first root is the one whose snippets should win — so a collection dropped in
+    -- a later root (a vendored pack of a few hundred files) can never outrank your own, whatever
+    -- format each happens to use. Ranking by format alone could not express that: your `.json` and a
+    -- vendor `.json` were indistinguishable once parsed.
+    local roots = config.paths or {}
+    -- LONGEST matching root wins, not the first: roots legitimately nest (a vendored collection
+    -- dropped inside the main folder is the obvious layout), and a plain first-match test assigns
+    -- every nested file to the outer root, silently collapsing the priority it was configured for.
+    local function root_rank(path)
+        local best, best_len = #roots + 1, -1
+        for i, root in ipairs(roots) do
+            local dir = vim.fn.expand(root)
+            if path:sub(1, #dir) == dir and #dir > best_len then
+                best, best_len = i, #dir
+            end
+        end
+        return best
+    end
+    for r = 1, math.max(#roots, 1) + 1 do
+        for rank, fmt in ipairs(formats) do
+            for _, list in ipairs(lists) do
+                for _, entry in ipairs(list) do
+                    if entry.kind == fmt and root_rank(entry.path) == r then
+                        -- The rank a record carries stays the FORMAT's, so an existing consumer's
+                        -- tiebreak keeps its meaning; the root only decides emission order, which is
+                        -- what the picker and the equal-score case actually read.
+                        dispatch(entry, rank)
+                    end
                 end
             end
         end
