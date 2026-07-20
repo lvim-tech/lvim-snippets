@@ -240,55 +240,51 @@ local function parse_snipmate(path)
     return out
 end
 
---- Load a LuaSnip `.lua` snippet file. These are LuaSnip's own code (they `require`
---- "luasnip" and can use function/dynamic nodes only LuaSnip can expand), so this is
---- OPTIONAL: it is a no-op unless LuaSnip is installed. Each STRING-trigger snippet becomes
---- a record whose `expand` delegates to `luasnip.snip_expand` (pattern/function triggers are
---- skipped — they are not completable prefixes). Best-effort for the standard
---- `return { s(…), … }` file shape; guarded so a bad file never breaks the registry.
+--- Load a `.lua` (LuaSnip-style) collection. Uses the plugin's OWN shim rather than LuaSnip: the file
+--- is run with its `require("luasnip")` resolved to a set of pure data constructors, and the snippets
+--- it builds are flattened into ordinary LSP bodies the session engine expands like any other format.
+--- A `regTrig` snippet is registered as a POSTFIX rule instead — that is precisely what it is.
 ---@param path string
 ---@param ft string
----@param out LvimSnippetsRecord[]
----@param rank integer   the format's priority index (1 = highest)
----@return boolean complete  false ⇒ LuaSnip was not loadable, so this file contributed nothing and the
----                          caller must NOT freeze the ft cache (LuaSnip may lazy-load later)
+---@param out table[]
+---@param rank integer
+---@return boolean complete
 local function load_luasnip(path, ft, out, rank)
-    local ok_ls = pcall(require, "luasnip")
-    if not ok_ls then
-        return false
-    end
-    local ok, snips = pcall(dofile, path)
-    if not ok or type(snips) ~= "table" then
+    local shim = require("lvim-snippets.luasnip_shim")
+    local snips, postfix, err = shim.load(path)
+    if err or not snips then
         broken_files[#broken_files + 1] = path
         return true -- a broken file is a COMPLETE outcome (tracked in broken_files); caching is fine
     end
-    for _, snip in ipairs(snips) do
-        local trig = type(snip) == "table" and snip.trigger or nil
-        if type(trig) == "string" and trig ~= "" and not snip.regTrig then
-            local doc
-            local ok_doc, ds = pcall(function()
-                return snip:get_docstring()
-            end)
-            if ok_doc and ds then
-                doc = type(ds) == "table" and table.concat(ds, "\n") or tostring(ds)
+    for _, sp in ipairs(snips) do
+        out[#out + 1] = {
+            prefix = sp.prefix,
+            body = sp.body,
+            description = sp.description,
+            ft = ft,
+            kind = "luasnip",
+            rank = rank or 1,
+            docstring = sp.body,
+        }
+    end
+    -- Regex-triggered entries are auto-expanding rules, not completion items: hand them to the
+    -- postfix engine, which owns that behaviour, rather than listing them in a menu they can never
+    -- be selected from.
+    if postfix and #postfix > 0 then
+        local cfgmod = require("lvim-snippets.config")
+        cfgmod.postfix = cfgmod.postfix or { enabled = true, rules = {} }
+        cfgmod.postfix.rules = cfgmod.postfix.rules or {}
+        for _, rule in ipairs(postfix) do
+            local dup = false
+            for _, existing in ipairs(cfgmod.postfix.rules) do
+                if existing.trigger == rule.trigger then
+                    dup = true
+                end
             end
-            local desc = snip.dscr
-                    and (type(snip.dscr) == "table" and table.concat(snip.dscr, " ") or tostring(snip.dscr))
-                or (type(snip.name) == "string" and snip.name or nil)
-            out[#out + 1] = {
-                prefix = trig,
-                body = trig, -- fallback text; the `expand` closure does the real insertion
-                description = desc,
-                ft = ft,
-                kind = "luasnip",
-                rank = rank or 1,
-                docstring = doc,
-                expand = function()
-                    pcall(function()
-                        require("luasnip").snip_expand(snip)
-                    end)
-                end,
-            }
+            if not dup then
+                rule.ft = ft ~= "all" and ft or nil
+                cfgmod.postfix.rules[#cfgmod.postfix.rules + 1] = rule
+            end
         end
     end
     return true
@@ -351,9 +347,13 @@ function M.get(ft)
     return out
 end
 
---- Expand a record at the cursor: a LuaSnip record runs its own `expand` closure
---- (function/dynamic nodes only LuaSnip can drive); everything else expands through
---- native vim.snippet — tabstops jump with vim.snippet.jump / the consumer's keys.
+--- Expand a record at the cursor through the plugin's OWN session engine (parser + session), which
+--- implements the whole LSP snippet grammar — nested placeholders, mirrors, choices, transforms and
+--- date/file variables. `vim.snippet` covers only part of that, which is why a computed value used to
+--- require a LuaSnip `.lua` collection; it no longer does.
+---
+--- A record carrying its own `expand` closure (a LuaSnip collection, when one is installed) still
+--- runs it: that code builds LuaSnip nodes directly and only LuaSnip can drive them.
 ---@param record LvimSnippetsRecord
 function M.expand(record)
     if type(record) ~= "table" then
@@ -362,7 +362,7 @@ function M.expand(record)
     if type(record.expand) == "function" then
         record.expand()
     else
-        vim.snippet.expand(record.body or "")
+        require("lvim-snippets.session").expand(record.body or "")
     end
 end
 

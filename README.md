@@ -1,7 +1,7 @@
 # lvim-snippets
 
 The snippet engine of the **lvim-tech** set. Collections in **three formats** — VS Code JSON, SnipMate
-and LuaSnip — behind one neutral engine: discovery by file extension under fully configurable roots
+and LuaSnip syntax — behind one neutral engine: discovery by file extension under fully configurable roots
 (recursive, nested subfolders welcome), lazy parsing per filetype, and format **priority** you control.
 It plugs into [lvim-cmp](https://github.com/lvim-tech/lvim-cmp) as a completion source through the
 public `register_source` API (no wiring — `setup()` does it), and ships the `:LvimSnippets` picker:
@@ -17,7 +17,7 @@ insert-at-the-cursor on confirm.
   | --- | --- | --- |
   | **VS Code** | a `package.json` manifest (`contributes.snippets`), or loose `<ft>.json` | native `vim.snippet` |
   | **SnipMate** | loose `<ft>.snippets` (parsed here — no dependency) | native `vim.snippet` |
-  | **LuaSnip** | loose `<ft>.lua` | LuaSnip (only when it is installed) |
+  | **LuaSnip syntax** | loose `<ft>.lua` | the plugin's own shim — no LuaSnip installation |
 
   `<ft>` is the filetype (`lua.json`, `python.snippets`, …); the language `all` applies everywhere. So
   `friendly-snippets` and any VS Code / SnipMate collection work directly — no snippet engine required.
@@ -35,7 +35,7 @@ insert-at-the-cursor on confirm.
   without lvim-cmp.
 - **Self-registering completion source** — when lvim-cmp is installed, `setup()` registers a
   `snippets` source through `require("lvim-cmp").register_source()` (prefix → label, body → snippet
-  insert text, LuaSnip records ride their own expander; the format rank encodes into the sort text).
+  insert text; the format rank encodes into the sort text).
 - **`:LvimSnippets`** — the current buffer's snippets in the canonical lvim-ui panel: column-aligned
   prefix + description rows, a live **body preview** beside the list (treesitter-highlighted by
   language), and on confirm the snippet expands at the cursor — tabstops jump as usual.
@@ -44,7 +44,7 @@ insert-at-the-cursor on confirm.
 
 Requires **Neovim >= 0.11** (`vim.snippet`) and [lvim-utils](https://github.com/lvim-tech/lvim-utils).
 [lvim-ui](https://github.com/lvim-tech/lvim-ui) is optional (the `:LvimSnippets` picker),
-[lvim-cmp](https://github.com/lvim-tech/lvim-cmp) is optional (completion), and LuaSnip is optional
+[lvim-cmp](https://github.com/lvim-tech/lvim-cmp) is optional (completion)
 (only for `.lua` snippet files — VS Code / SnipMate need nothing).
 
 ## Installation
@@ -77,7 +77,7 @@ the engine and the picker themselves).
 
 Nothing to do — with lvim-cmp installed, `setup()` registers the `snippets` source and your snippets
 complete as you type, ranked with everything else. Accepting expands the snippet (`vim.snippet`, or
-LuaSnip for its records); `<Tab>` / `<S-Tab>` jump the tabstops (lvim-cmp's keys).
+`<Tab>` / `<S-Tab>` jump the tabstops (lvim-cmp's keys).
 
 ### The picker
 
@@ -99,9 +99,9 @@ local snippets = require("lvim-snippets")
 
 snippets.get("lua") -- ranked neutral records for a filetype:
 -- { prefix, body, description?, name?, ft, kind, rank, docstring?, expand? }
-snippets.expand(record) -- expand a record at the cursor (vim.snippet / LuaSnip)
+snippets.expand(record) -- expand a record at the cursor (the plugin's own session engine)
 snippets.reset() -- drop the discovery + parse caches (new files on disk)
-snippets.stats() -- per-format counts, broken files, LuaSnip availability
+snippets.stats() -- per-format counts, broken files
 ```
 
 ## Configuration
@@ -131,7 +131,7 @@ require("lvim-snippets").setup({
 ```
 
 ```lua
--- example: your own roots, LuaSnip wins ties, SnipMate disabled
+-- example: your own roots, .lua collections win ties, SnipMate disabled
 require("lvim-snippets").setup({
     paths = { vim.fn.stdpath("config") .. "/snippets", "~/dev/snippets" },
     formats = { "luasnip", "vscode" },
@@ -141,8 +141,8 @@ require("lvim-snippets").setup({
 ## Health
 
 `:checkhealth lvim-snippets` reports the runtime requirement, the shared dependencies, the discovered
-collections (per-format file counts and the active priority order), unparsable files, LuaSnip `.lua`
-files present without LuaSnip installed (they are skipped), whether the source registered into
+collections (per-format file counts and the active priority order), unparsable files, whether the
+source registered into
 lvim-cmp, and validates the live config.
 
 ## License
