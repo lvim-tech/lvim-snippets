@@ -11,6 +11,7 @@
 --   M.expand(record) – expand a record at the cursor (the plugin's own session engine)
 --   M.jump(dir) / M.jumpable(dir) / M.active() – drive the live session
 --   M.choices() / M.set_choice(v)  – the choice menu at the active stop
+--   M.register_paths(paths) – add collection roots owned by a PLUGIN, after the user's own
 --   M.reset()        – drop the discovery + parse caches (paths/formats changed, new files)
 --   M.stats()        – registry statistics (per-format counts; :checkhealth)
 --
@@ -69,6 +70,21 @@ end
 ---@param record LvimSnippetsRecord
 function M.expand(record)
     engine.expand(record)
+end
+
+--- Register collection roots a PLUGIN ships (e.g. lvim-tex's TeX collection), scanned after the
+--- user's own `paths` so nothing configured is ever outranked or replaced. Idempotent — call it from
+--- the owning plugin's `setup()`; the load order relative to lvim-snippets' own setup does not matter.
+---@param paths string|string[]  directory (or directories) to scan, exactly like `config.paths`
+---@return integer  how many roots this call added
+function M.register_paths(paths)
+    return engine.register_paths(paths)
+end
+
+--- Every collection root in priority order — the configured ones, then the registered ones.
+---@return string[]
+function M.paths()
+    return engine.roots()
 end
 
 --- Drop the discovery + parse caches (config `paths`/`formats` changed / new files on disk).

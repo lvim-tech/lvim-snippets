@@ -27,6 +27,16 @@ insert-at-the-cursor on confirm.
   nested subfolders by type/purpose (`languages/lua.json`, `frameworks/web/react.snippets`,
   `custom/mine.lua`) — the directory names are yours; the **filename** sets the filetype. A directory
   with a `package.json` manifest is a self-contained VS Code collection (the manifest owns its layout).
+- **Roots a plugin registers** — a plugin that ships its own collection calls
+  `require("lvim-snippets").register_paths("<its>/snippets")` from its `setup()`; the root is scanned
+  **after** every configured one, so a plugin can never outrank or replace what you configured. Load
+  order does not matter (a new root drops the discovery cache), and `:checkhealth` lists them apart
+  from your own.
+- **Postfix rules** — snippets whose trigger is a **Lua pattern** and which fire **as you type**, with
+  no menu and no accept key (`foo.par` → `(foo)`); the trigger's captures are `$1`, `$2`… in the body,
+  which may itself be a function. A rule may carry a **`when` predicate** — a condition about the
+  BUFFER that no pattern can express ("only inside a maths formula", "not in a comment"); it is checked
+  while matching, so a rule that declines never shadows one that would fire.
 - **Format priority** — `formats` lists the enabled formats **in priority order**: omit one to disable
   it, reorder to change which wins. The rank is a tiebreak — among snippets with an equal fuzzy score in
   lvim-cmp, the earlier-listed format ranks first.
@@ -100,6 +110,8 @@ local snippets = require("lvim-snippets")
 snippets.get("lua") -- ranked neutral records for a filetype:
 -- { prefix, body, description?, name?, ft, kind, rank, docstring?, expand? }
 snippets.expand(record) -- expand a record at the cursor (the plugin's own session engine)
+snippets.register_paths(dir) -- add a collection root a PLUGIN ships (after the user's own)
+snippets.paths() -- every root in priority order: configured, then registered
 snippets.reset() -- drop the discovery + parse caches (new files on disk)
 snippets.stats() -- per-format counts, broken files
 ```
@@ -127,8 +139,28 @@ require("lvim-snippets").setup({
         preview = true, -- show the body preview panel beside the list
         preview_side = "right", -- initial preview placement: "right" | "left" | "above" | "below"
     },
+    -- POSTFIX rules: a Lua-pattern trigger that fires AS YOU TYPE, with no menu and no accept
+    -- key. Empty by default — a `.lua` collection's regex-triggered snippets register themselves
+    -- here as they load, and a plugin (lvim-tex's maths abbreviations) registers its own.
+    postfix = {
+        enabled = true,
+        rules = {
+            -- { trigger = "([%w_]+)%.par", body = "($1)$0", desc = "wrap in parentheses",
+            --   ft = { "lua" }, when = function(ctx) return true end },
+        },
+    },
 })
 ```
+
+A postfix rule is `{ trigger, body, desc?, ft?, when? }`:
+
+| field | meaning |
+| --- | --- |
+| `trigger` | a **Lua pattern**, matched against the text before the cursor and anchored to its end; its captures are `$1`, `$2`… in the body. The longest trigger wins |
+| `body` | the snippet body (LSP syntax, tabstops included), or `fun(caps: string[]): string` for a rule that needs real logic |
+| `desc` | shown in `:checkhealth` |
+| `ft` | filetype or list of filetypes (default: all) |
+| `when` | `fun(ctx): boolean` — an extra condition checked **while matching**, so declining does not shadow another rule. `ctx` is `{ buf, row, col, line, from }`, every coordinate **0-based** (`from` = where the matched trigger starts) |
 
 ```lua
 -- example: your own roots, .lua collections win ties, SnipMate disabled
@@ -141,9 +173,9 @@ require("lvim-snippets").setup({
 ## Health
 
 `:checkhealth lvim-snippets` reports the runtime requirement, the shared dependencies, the discovered
-collections (per-format file counts and the active priority order), unparsable files, whether the
-source registered into
-lvim-cmp, and validates the live config.
+collections (per-format file counts and the active priority order), the roots a plugin registered,
+unparsable files, the postfix engine (rule count, how many are conditional), whether the source
+registered into lvim-cmp, and validates the live config.
 
 ## License
 

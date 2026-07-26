@@ -104,7 +104,21 @@ function M.check()
     end
 
     -- the discovered collections
-    local stats = require("lvim-snippets.engine").stats()
+    local engine = require("lvim-snippets.engine")
+    local stats = engine.stats()
+    -- Roots a plugin registered are reported separately from the configured ones: "where did these
+    -- snippets come from" has a different answer for each, and only the configured list is the user's.
+    local plugin_roots = {}
+    for _, root in ipairs(engine.roots()) do
+        if not vim.tbl_contains(config.paths or {}, root) then
+            plugin_roots[#plugin_roots + 1] = root
+        end
+    end
+    if #plugin_roots > 0 then
+        health.ok(
+            ("%d collection root(s) registered by a plugin: %s"):format(#plugin_roots, table.concat(plugin_roots, ", "))
+        )
+    end
     if stats.files > 0 then
         local k = stats.by_kind
         health.ok(
@@ -136,6 +150,27 @@ function M.check()
     end
     for _, path in ipairs(stats.broken) do
         health.warn(("unparsable file skipped: %s"):format(path))
+    end
+
+    -- the postfix engine: rules only fire while it is enabled, and a rule carrying a `when`
+    -- predicate is CONDITIONAL — worth naming, because "my abbreviation did not expand" is the same
+    -- symptom whether the engine is off or the predicate said no.
+    local postfix = config.postfix or {}
+    local rules = postfix.rules or {}
+    local conditional = 0
+    for _, rule in ipairs(rules) do
+        if type(rule.when) == "function" then
+            conditional = conditional + 1
+        end
+    end
+    if postfix.enabled then
+        health.ok(("postfix engine on — %d rule(s), %d conditional (`when`)"):format(#rules, conditional))
+    elseif #rules > 0 then
+        health.warn(
+            ("postfix engine off (postfix.enabled = false) — %d registered rule(s) cannot fire"):format(#rules)
+        )
+    else
+        health.info("postfix engine off (postfix.enabled = false)")
     end
 
     -- the lvim-cmp registration

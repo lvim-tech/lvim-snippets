@@ -20,6 +20,12 @@
 -- case that needs real logic rather than substitution — the escape hatch that keeps this at parity
 -- with what a LuaSnip function node could do.
 --
+-- A rule may also carry a `when` PREDICATE: the same trigger fires in one context and stays literal
+-- text in another. That is not a refinement of the trigger pattern — "am I inside a maths formula",
+-- "is this a comment", "does the parse tree say I am in a string" are questions about the BUFFER, not
+-- about the characters before the cursor, so no pattern can express them. The predicate is evaluated
+-- while MATCHING (not after), so a rule that declines does not shadow a looser rule that would fire.
+--
 ---@module "lvim-snippets.postfix"
 
 local config = require("lvim-snippets.config")
@@ -27,11 +33,19 @@ local config = require("lvim-snippets.config")
 local api = vim.api
 local M = {}
 
+---@class LvimSnippetsPostfixCtx      where a rule is about to fire (every coordinate 0-BASED)
+---@field buf integer                 the buffer
+---@field row integer                 the cursor's row
+---@field col integer                 the cursor's byte column (one past the trigger's last character)
+---@field line string                 the whole line the trigger was typed on
+---@field from integer                the byte column the matched trigger STARTS at
+
 ---@class LvimSnippetsPostfixRule
 ---@field trigger string                            a Lua pattern matched against the text before the cursor
 ---@field body string|fun(caps: string[]): string   the snippet body; `$1`… are the trigger's captures
 ---@field desc? string                              shown in :checkhealth and the picker
 ---@field ft? string|string[]                       filetypes this rule applies to (default: all)
+---@field when? fun(ctx: LvimSnippetsPostfixCtx): boolean  extra condition, checked WHILE matching: false leaves the typed text alone and lets another rule match
 
 ---@type integer?  the augroup, when watching is installed
 local augroup = nil
@@ -88,14 +102,38 @@ local function substitute(body, caps)
     return out
 end
 
+--- Is `rule` allowed to fire here? A rule with no `when` always is.
+--- The predicate runs in a pcall: a broken one declines its own rule instead of breaking every
+--- keystroke in insert mode.
+---@param rule LvimSnippetsPostfixRule
+---@param where LvimSnippetsPostfixCtx
+---@return boolean
+local function permitted(rule, where)
+    if type(rule.when) ~= "function" then
+        return true
+    end
+    local ok, verdict = pcall(rule.when, where)
+    return ok and verdict == true
+end
+
 --- The rule matching the text before the cursor, if any.
 --- Anchored to the END of the line prefix (`pattern .. "$"`), so a rule fires on what was just typed
 --- rather than on something further back.
+---
+--- `ctx` says WHERE the match is being made — the buffer/row/col a `when` predicate needs to ask its
+--- question about. It defaults to the current window's cursor, so a caller that only wants to know
+--- "which rule would fire on this text" still gets a truthful answer.
 ---@param prefix string  the text before the cursor
 ---@param ft string
+---@param ctx? { buf: integer, row: integer, col: integer, line: string? }  0-based row/col
 ---@return LvimSnippetsPostfixRule? rule, integer? from, string[]? caps
-function M.match(prefix, ft)
+function M.match(prefix, ft, ctx)
     local rules = config.postfix and config.postfix.rules or {}
+    if not ctx then
+        local pos = api.nvim_win_get_cursor(0)
+        ctx = { buf = api.nvim_get_current_buf(), row = pos[1] - 1, col = pos[2] }
+    end
+    local line = ctx.line or api.nvim_buf_get_lines(ctx.buf, ctx.row, ctx.row + 1, false)[1] or prefix
     local best, best_from, best_caps, best_len = nil, nil, nil, -1
     for _, rule in ipairs(rules) do
         if type(rule.trigger) == "string" and applies(rule, ft) then
@@ -110,9 +148,14 @@ function M.match(prefix, ft)
                 if #caps == 0 then
                     caps = { whole }
                 end
-                -- Longest trigger wins, so a specific rule is never shadowed by a looser one.
+                -- Longest trigger wins, so a specific rule is never shadowed by a looser one — and a
+                -- rule whose `when` declines is not a candidate at all, so it cannot shadow either.
                 if #rule.trigger > best_len then
-                    best, best_from, best_caps, best_len = rule, from, caps, #rule.trigger
+                    ---@type LvimSnippetsPostfixCtx
+                    local where = { buf = ctx.buf, row = ctx.row, col = ctx.col, line = line, from = from - 1 }
+                    if permitted(rule, where) then
+                        best, best_from, best_caps, best_len = rule, from, caps, #rule.trigger
+                    end
                 end
             end
         end
@@ -130,7 +173,12 @@ function M.try_expand()
     local row, col = unpack(api.nvim_win_get_cursor(win))
     local line = api.nvim_get_current_line()
     local prefix = line:sub(1, col)
-    local rule, from, caps = M.match(prefix, vim.bo.filetype)
+    local rule, from, caps = M.match(prefix, vim.bo.filetype, {
+        buf = api.nvim_get_current_buf(),
+        row = row - 1,
+        col = col,
+        line = line,
+    })
     if not rule then
         return false
     end

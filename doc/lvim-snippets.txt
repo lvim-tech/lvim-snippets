@@ -7,11 +7,12 @@ CONTENTS                                                       *lvim-snippets*
   2. Requirements ........................... |lvim-snippets-requirements|
   3. Setup .................................. |lvim-snippets-setup|
   4. Formats and discovery .................. |lvim-snippets-formats|
-  5. Completion (lvim-cmp) .................. |lvim-snippets-cmp|
-  6. The picker ............................. |lvim-snippets-picker|
-  7. API .................................... |lvim-snippets-api|
-  8. Configuration .......................... |lvim-snippets-config|
-  9. Health ................................. |lvim-snippets-health|
+  5. Postfix rules .......................... |lvim-snippets-postfix|
+  6. Completion (lvim-cmp) .................. |lvim-snippets-cmp|
+  7. The picker ............................. |lvim-snippets-picker|
+  8. API .................................... |lvim-snippets-api|
+  9. Configuration .......................... |lvim-snippets-config|
+  10. Health ................................ |lvim-snippets-health|
 
 ==============================================================================
 1. INTRODUCTION                                          *lvim-snippets-intro*
@@ -88,7 +89,47 @@ Backtick / python interpolations in SnipMate bodies are NOT evaluated; they
 pass through literally.
 
 ==============================================================================
-5. COMPLETION (LVIM-CMP)                                   *lvim-snippets-cmp*
+5. POSTFIX RULES                                       *lvim-snippets-postfix*
+
+A postfix rule is a snippet whose trigger is a LUA PATTERN and which fires AS
+YOU TYPE — no completion menu, no accept key: >lua
+    { trigger = "([%w_]+)%.par", body = "($1)$0" }   -- foo.par  ->  (foo)
+    { trigger = "(.+)%.r",       body = "return $1$0" }
+<
+The trigger is matched against the text BEFORE the cursor, anchored to its
+end; its captures are addressable as `$1`, `$2`… in the body. The LONGEST
+trigger wins, so a specific rule is never shadowed by a looser one. A rule
+lives in `postfix.rules` (see |lvim-snippets-config|) — added there directly,
+or registered by a `.lua` collection's regex-triggered snippets as it loads,
+or by a plugin that owns a rule set of its own.
+
+Fields: >lua
+    { trigger = "…",   -- Lua pattern (required)
+      body    = "…",   -- snippet body, or fun(caps: string[]): string
+      desc    = "…",   -- shown in :checkhealth
+      ft      = "tex", -- filetype or list (default: every filetype)
+      when    = function(ctx) return true end }
+<
+                                                          *lvim-snippets-when*
+`when` is an extra CONDITION about the buffer — the question no pattern can
+express: "only inside a maths formula", "not in a comment", "only where the
+parse tree says X". It receives >lua
+    { buf, row, col, line, from }
+<
+with every coordinate 0-BASED: `row`/`col` are the cursor, `line` is the whole
+line, and `from` is the byte column the matched trigger starts at. Returning
+anything but `true` declines the rule.
+
+The predicate is evaluated WHILE MATCHING, not after a winner is picked, so a
+rule that declines does not shadow a looser rule that would fire. It runs on
+every insert-mode text change, so it must be cheap — and it runs in a pcall: a
+broken predicate declines its own rule instead of breaking insert mode.
+
+Rules only fire while `postfix.enabled` is true; `:checkhealth` reports the
+engine's state, the rule count and how many rules are conditional.
+
+==============================================================================
+6. COMPLETION (LVIM-CMP)                                   *lvim-snippets-cmp*
 
 With lvim-cmp installed, setup() registers a "snippets" source through
 lvim-cmp's public register_source API — lvim-cmp itself carries no snippet
@@ -104,7 +145,7 @@ The source's per-source options inside lvim-cmp (merge `priority`, the
 false` skips the registration entirely.
 
 ==============================================================================
-6. THE PICKER                                           *lvim-snippets-picker*
+7. THE PICKER                                           *lvim-snippets-picker*
 
                                                                *:LvimSnippets*
 >vim
@@ -129,7 +170,7 @@ Keys inside the panel:
   q / <Esc>         close
 
 ==============================================================================
-7. API                                                     *lvim-snippets-api*
+8. API                                                     *lvim-snippets-api*
 
 require("lvim-snippets").setup({opts})    see |lvim-snippets.setup()|
 
@@ -148,6 +189,20 @@ require("lvim-snippets").expand({record})
         Expand a record at the cursor, through the plugin's own session
         engine — every record, every format.
 
+                                              *lvim-snippets.register_paths()*
+require("lvim-snippets").register_paths({paths})
+        Register collection roots a PLUGIN ships (a string or a list), scanned
+        AFTER the user's own `paths` — so a plugin can never outrank or
+        replace what you configured. Idempotent (an already known root is
+        ignored) and order-independent: a new root drops the discovery cache,
+        whenever it arrives. Returns how many roots were added. >lua
+            require("lvim-snippets").register_paths(dir .. "/snippets")
+<
+                                                       *lvim-snippets.paths()*
+require("lvim-snippets").paths()
+        Every collection root in priority order: the configured ones, then
+        the registered ones.
+
                                                        *lvim-snippets.reset()*
 require("lvim-snippets").reset()
         Drop the discovery + parse caches (paths/formats changed, new files
@@ -159,7 +214,7 @@ require("lvim-snippets").stats()
         files, per-format counts (what :checkhealth shows).
 
 ==============================================================================
-8. CONFIGURATION                                        *lvim-snippets-config*
+9. CONFIGURATION                                        *lvim-snippets-config*
 
 The full default config (every option at its default): >lua
     require("lvim-snippets").setup({
@@ -175,6 +230,10 @@ The full default config (every option at its default): >lua
             preview = true,
             preview_side = "right",
         },
+        postfix = {
+            enabled = true,
+            rules = {},
+        },
     })
 <
   paths          collection roots (recursive). Your list REPLACES the default
@@ -189,15 +248,21 @@ The full default config (every option at its default): >lua
   picker.preview_side
                  initial preview placement: "right" | "left" | "above" |
                  "below".
+  postfix.enabled
+                 the as-you-type pattern trigger engine (|lvim-snippets-postfix|).
+  postfix.rules  the rules themselves — empty by default: a `.lua`
+                 collection's regex-triggered snippets and a plugin's own rule
+                 set register themselves here.
 
 ==============================================================================
-9. HEALTH                                               *lvim-snippets-health*
+10. HEALTH                                               *lvim-snippets-health*
 
 Run `:checkhealth lvim-snippets`. It reports the Neovim requirement, the
 shared dependencies (lvim-utils, lvim-ui), the discovered collections
-(per-format file counts and the active priority order), unparsable files,
-`.lua` files whose nodes cannot be translated (they are skipped
-until it is), whether the "snippets" source registered into lvim-cmp, and
-validates the live config.
+(per-format file counts and the active priority order), the collection roots
+a plugin registered, unparsable files, `.lua` files whose nodes cannot be
+translated (they are skipped until it is), the postfix engine (its state, the
+rule count and how many rules carry a `when`), whether the "snippets" source
+registered into lvim-cmp, and validates the live config.
 
 vim:tw=78:ts=8:ft=help:norl:

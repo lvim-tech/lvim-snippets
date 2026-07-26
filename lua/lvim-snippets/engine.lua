@@ -48,6 +48,54 @@ local partial_files = {}
 ---@type integer  bumped on every reset() so consumers can invalidate their derived caches
 local generation = 1
 
+---@type string[]  collection roots REGISTERED at runtime by another plugin (see M.register_paths)
+local registered = {}
+
+--- Every collection root, in priority order: the user's `config.paths` first, the roots a plugin
+--- REGISTERED after them. That order is the whole point of keeping the two lists apart — a plugin's
+--- own collection must never outrank (or replace) what the user configured, and `config.paths` is a
+--- clean array REPLACE on merge, so a plugin writing into it would silently drop the user's folders.
+---@return string[]
+function M.roots()
+    local out = {}
+    for _, p in ipairs(config.paths or {}) do
+        out[#out + 1] = p
+    end
+    for _, p in ipairs(registered) do
+        out[#out + 1] = p
+    end
+    return out
+end
+
+--- Register extra collection roots owned by a PLUGIN (its own shipped snippets), appended after the
+--- user's `config.paths`. Idempotent: a root already registered — or already configured — is ignored,
+--- so calling it from a plugin's `setup()` on every reload is safe. A NEW root drops the discovery
+--- caches so it is picked up immediately, whatever the load order was.
+---@param paths string|string[]
+---@return integer  how many roots were added by this call
+function M.register_paths(paths)
+    local list = type(paths) == "table" and paths or { paths }
+    local known = {}
+    for _, p in ipairs(M.roots()) do
+        known[vim.fs.normalize(vim.fn.expand(p))] = true
+    end
+    local added = 0
+    for _, p in ipairs(list) do
+        if type(p) == "string" and p ~= "" then
+            local root = vim.fs.normalize(vim.fn.expand(p))
+            if not known[root] then
+                known[root] = true
+                registered[#registered + 1] = root
+                added = added + 1
+            end
+        end
+    end
+    if added > 0 then
+        M.reset()
+    end
+    return added
+end
+
 --- Read + JSON-decode a file; nil (and a health note) on failure.
 ---@param path string
 ---@return table?
@@ -162,7 +210,7 @@ local function register_dir(map, dir, depth)
     end
 end
 
---- Discover every collection once: each configured root (`config.paths`), walked
+--- Discover every collection once: each root (`config.paths`, then the registered ones), walked
 --- recursively. The folders are fully config-driven — no path is hardcoded here.
 ---@return table<string, LvimSnippetsFile[]>
 local function discover()
@@ -172,7 +220,7 @@ local function discover()
     local map = {}
     local roots = {}
     local seen = {}
-    for _, p in ipairs(config.paths or {}) do
+    for _, p in ipairs(M.roots()) do
         local root = vim.fs.normalize(p)
         if not seen[root] then -- a duplicate root would register every collection under it twice
             seen[root] = true
@@ -361,12 +409,12 @@ function M.get(ft)
     if ft ~= "all" then
         lists[#lists + 1] = map.all or {}
     end
-    -- ROOT order is the outer priority, FORMAT order the inner one. `config.paths` is already a
+    -- ROOT order is the outer priority, FORMAT order the inner one. The root list is already a
     -- ranked list — the first root is the one whose snippets should win — so a collection dropped in
-    -- a later root (a vendored pack of a few hundred files) can never outrank your own, whatever
-    -- format each happens to use. Ranking by format alone could not express that: your `.json` and a
-    -- vendor `.json` were indistinguishable once parsed.
-    local roots = config.paths or {}
+    -- a later root (a vendored pack of a few hundred files, or a plugin's own registered folder) can
+    -- never outrank your own, whatever format each happens to use. Ranking by format alone could not
+    -- express that: your `.json` and a vendor `.json` were indistinguishable once parsed.
+    local roots = M.roots()
     -- LONGEST matching root wins, not the first: roots legitimately nest (a vendored collection
     -- dropped inside the main folder is the obvious layout), and a plain first-match test assigns
     -- every nested file to the outer root, silently collapsing the priority it was configured for.
@@ -440,7 +488,9 @@ function M.stats()
 end
 
 --- Drop the discovery + record caches (config `paths`/`formats` changed / new files on
---- disk) and bump the generation so consumers rebuild their derived caches.
+--- disk) and bump the generation so consumers rebuild their derived caches. Roots REGISTERED by a
+--- plugin survive: they are a registration, not a cache — dropping them would need every plugin to
+--- re-register whenever the user re-ran setup().
 function M.reset()
     files_by_lang = nil
     records_by_ft = {}
