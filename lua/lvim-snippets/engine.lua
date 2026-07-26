@@ -87,15 +87,20 @@ local function register(map, lang, path, kind)
             -- here) and, worse, listed every one of those snippets twice in the completion menu. The
             -- dedupe lives at the file level rather than the root level because the outer/inner pair
             -- are both legitimate roots — neither should be dropped, only the second sighting.
+            -- Compared by REAL path, not by the string we arrived on: with symlinks followed, one
+            -- file is legitimately reachable under several names (a linked file AND a linked parent
+            -- directory both lead to it), and a string compare would register each sighting as its
+            -- own collection — the same snippets listed twice in the menu.
+            local real = uv.fs_realpath(path) or path
             local dup = false
             for _, existing in ipairs(map[l]) do
-                if existing.path == path then
+                if existing.path == real then
                     dup = true
                     break
                 end
             end
             if not dup then
-                map[l][#map[l] + 1] = { path = path, kind = kind }
+                map[l][#map[l] + 1] = { path = real, kind = kind }
             end
         end
     end
@@ -136,6 +141,13 @@ local function register_dir(map, dir, depth)
             break
         end
         local full = dir .. "/" .. name
+        -- A SYMLINK is reported by `fs_scandir_next` as type "link", never as "file"/"directory", so a
+        -- symlinked collection (the usual dotfiles arrangement — one real tree, linked into the
+        -- snippets root) was skipped without a word. Resolve it with `fs_stat`, which FOLLOWS the link;
+        -- the depth cap above is what keeps a symlink cycle finite, exactly as documented.
+        if entry_type == "link" then
+            entry_type = (uv.fs_stat(full) or {}).type
+        end
         if entry_type == "file" then
             if name:sub(-5) == ".json" and name ~= "package.json" then
                 register(map, name:sub(1, -6), full, "vscode")
