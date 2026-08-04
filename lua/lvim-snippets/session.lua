@@ -197,7 +197,7 @@ end
 ---@return string
 local function mark_text(buf, pair)
     local sr, sc, er, ec = mark_range(buf, pair)
-    if sr == nil or er == nil then
+    if sr == nil or sc == nil or er == nil or ec == nil then
         return ""
     end
     local lines = api.nvim_buf_get_text(buf, sr, sc, er, ec, {})
@@ -210,7 +210,7 @@ end
 ---@param text string
 local function set_mark_text(buf, pair, text)
     local sr, sc, er, ec = mark_range(buf, pair)
-    if sr == nil or er == nil then
+    if sr == nil or sc == nil or er == nil or ec == nil then
         return
     end
     api.nvim_buf_set_text(buf, sr, sc, er, ec, vim.split(text, "\n", { plain = true }))
@@ -613,8 +613,8 @@ function M.expand(body, opts)
             end
             -- Line granularity on purpose: an exit stop at the end of a line is legitimately one
             -- column past the last mark, and a column test would tear the session down there.
-            local row = api.nvim_win_get_cursor(0)[1] - 1
-            if row >= top and row <= bot then
+            local cursor_row = api.nvim_win_get_cursor(0)[1] - 1
+            if cursor_row >= top and cursor_row <= bot then
                 -- Leaving presupposes having arrived. Inserting a multi-line body leaves the cursor
                 -- at the END of the inserted text — outside the region — and this autocmd fires there
                 -- BEFORE the keys that jump to the first stop have been processed, which tore every
