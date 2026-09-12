@@ -83,10 +83,10 @@ function M.check()
     local health = vim.health
     health.start("lvim-snippets")
 
-    if vim.fn.has("nvim-0.11") == 1 then
-        health.ok("Neovim >= 0.11")
+    if vim.fn.has("nvim-0.12") == 1 then
+        health.ok("Neovim >= 0.12")
     else
-        health.error("Neovim >= 0.11 is required")
+        health.error("Neovim >= 0.12 is required (the lvim-tech set targets 0.12; lvim-utils requires it)")
     end
 
     -- shared dependencies

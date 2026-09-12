@@ -52,7 +52,7 @@ insert-at-the-cursor on confirm.
 
 ## Requirements
 
-Requires **Neovim >= 0.11** and [lvim-utils](https://github.com/lvim-tech/lvim-utils).
+Requires **Neovim >= 0.12** and [lvim-utils](https://github.com/lvim-tech/lvim-utils).
 [lvim-ui](https://github.com/lvim-tech/lvim-ui) is optional (the `:LvimSnippets` picker),
 [lvim-cmp](https://github.com/lvim-tech/lvim-cmp) is optional (completion)
 (only for `.lua` snippet files — VS Code / SnipMate need nothing).

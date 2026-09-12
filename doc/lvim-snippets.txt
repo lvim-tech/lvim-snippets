@@ -28,7 +28,7 @@ body preview, insert-at-the-cursor on confirm.
 ==============================================================================
 2. REQUIREMENTS                                   *lvim-snippets-requirements*
 
-  • Neovim >= 0.11
+  • Neovim >= 0.12
   • lvim-utils (setup() merge)
   • lvim-ui — optional, the :LvimSnippets picker
   • lvim-cmp — optional, snippet completion (the source registers itself)
